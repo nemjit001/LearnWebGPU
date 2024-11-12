@@ -142,6 +142,103 @@ void inspectAdapter( WGPUAdapter adapter )
     }
 }
 
+WGPUAdapter lwgpuCreateAdapter(WGPUInstance instance, WGPUSurface surface)
+{
+    struct UserData
+    {
+        WGPUAdapter adapter = nullptr;
+        bool done = false;
+    } userData;
+
+    auto requestCallback = []( WGPURequestAdapterStatus status, WGPUAdapter adapter, const char* pMessage, void* pUserData)
+    {
+        UserData& userData = *reinterpret_cast<UserData*>( pUserData );
+        if (status == WGPURequestAdapterStatus_Success)
+        {
+            userData.adapter = adapter;
+        }
+        else
+        {
+            std::cout << "WGPU Adapter request failed: " << pMessage << std::endl;
+            userData.adapter = nullptr; //< still NULL
+        }
+        userData.done = true;
+    };
+
+    WGPURequestAdapterOptions adapterOptions {};
+    adapterOptions.compatibleSurface    = surface;
+    adapterOptions.forceFallbackAdapter = false;
+    adapterOptions.powerPreference      = WGPUPowerPreference_HighPerformance;
+    wgpuInstanceRequestAdapter( instance, &adapterOptions, requestCallback, &userData );
+
+#if __EMSCRIPTEN__
+    while ( !userData.done )
+    {
+        emscripten_sleep( 100 );
+    }
+#endif
+
+    assert( userData.done );
+    return userData.adapter;
+}
+
+WGPUDevice lwgpuCreateDevice(WGPUAdapter adapter)
+{
+    struct UserData
+    {
+        WGPUDevice device = nullptr;
+        bool done = false;
+    } userData;
+
+    auto requestCallback = [](WGPURequestDeviceStatus status, WGPUDevice device, const char* pMessage, void* pUserData)
+    {
+        UserData& data = *reinterpret_cast<UserData*>( pUserData );
+        if ( status == WGPURequestDeviceStatus_Success )
+        {
+            data.device = device;
+        }
+        else
+        {
+            std::cout << "WGPU Device request failed: " << pMessage << std::endl;
+            data.device = nullptr;
+        }
+        data.done = true;
+    };
+
+    WGPUDeviceDescriptor deviceDesc {};
+    deviceDesc.label                    = "WGPU Device";
+    deviceDesc.deviceLostCallback       = nullptr;
+    deviceDesc.deviceLostUserdata       = nullptr;
+    deviceDesc.requiredFeatureCount     = 0;
+    deviceDesc.requiredFeatures         = nullptr;
+    deviceDesc.requiredLimits           = nullptr;
+    deviceDesc.defaultQueue.label       = "Device Queue";
+    deviceDesc.defaultQueue.nextInChain = nullptr;
+    wgpuAdapterRequestDevice( adapter, &deviceDesc, requestCallback, &userData );
+
+#if __EMSCRIPTEN__
+    while ( !userData.done )
+    {
+        emscripten_sleep( 100 );
+    }
+#endif
+
+    assert( userData.done );
+    return userData.device;
+}
+
+void lwgpuPollDevice(WGPUDevice device)
+{
+#if     defined(WEBGPU_BACKEND_WGPU)
+    wgpuDevicePoll( device, false, nullptr );
+#elif   defined(WEBGPU_BACKEND_DAWN)
+    wgpuDeviceTick( device );
+#elif   defined(WEBGPU_BACKEND_EMSCRIPTEN)
+    // TODO(nemjit001): check if sleep is really needed
+    // emscripten_sleep( 100 );
+#endif
+}
+
 // Initialize the application.
 void init()
 {
@@ -154,6 +251,25 @@ void init()
         std::cerr << "Failed to create window." << std::endl;
         return;
     }
+
+#ifdef WEBGPU_BACKEND_EMSCRIPTEN
+    instance = wgpuCreateInstance( nullptr );
+#else
+    WGPUInstanceDescriptor instanceDesc {};
+    #ifdef WEBGPU_BACKEND_DAWN
+    // TODO(nemjit001): enable debugging & error handling when using Dawn backend
+    #endif
+    instance = wgpuCreateInstance( &instanceDesc );
+#endif
+
+    surface = SDL_GetWGPUSurface( instance, window );
+    WGPUAdapter adapter = lwgpuCreateAdapter( instance, surface );
+    device              = lwgpuCreateDevice( adapter );
+    queue               = wgpuDeviceGetQueue( device );
+
+    inspectAdapter( adapter );
+    wgpuAdapterRelease( adapter );
+    std::cout << "Initialized LearnWebGPU" << std::endl;
 }
 
 void resize()
@@ -163,7 +279,9 @@ void resize()
 }
 
 void render()
-{}
+{
+    lwgpuPollDevice( device );
+}
 
 void update( void* userdata = nullptr )
 {
@@ -191,6 +309,11 @@ void update( void* userdata = nullptr )
 
 void destroy()
 {
+    wgpuQueueRelease( queue );
+    wgpuDeviceRelease( device );
+    wgpuSurfaceRelease( surface );
+    wgpuInstanceRelease( instance );
+
     SDL_DestroyWindow( window );
     SDL_Quit();
 }
