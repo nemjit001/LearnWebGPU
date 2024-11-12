@@ -60,6 +60,12 @@ WGPUSurfaceConfiguration surfaceConfiguration {};
 
 bool isRunning = true;
 
+void init();
+void resize();
+void update(void* pUserData = nullptr);
+void render();
+void destroy();
+
 bool getAdapterLimits( WGPUAdapter adapter, WGPUSupportedLimits& supportedLimits )
 {
 #ifdef WEBGPU_BACKEND_DAWN
@@ -239,6 +245,46 @@ void lwgpuPollDevice(WGPUDevice device)
 #endif
 }
 
+WGPUTexture lwgpuGetNextSurfaceTexture(WGPUSurface surface)
+{
+    WGPUSurfaceTexture surfaceTexture {};
+    wgpuSurfaceGetCurrentTexture( surface, &surfaceTexture );
+
+    if ( surfaceTexture.suboptimal )
+    {
+        if ( surfaceTexture.texture != nullptr )
+        {
+            wgpuTextureRelease( surfaceTexture.texture );
+        }
+
+        resize();
+        return nullptr;
+    }
+
+    switch ( surfaceTexture.status )
+    {
+    case WGPUSurfaceGetCurrentTextureStatus_Success:
+        break;
+    case WGPUSurfaceGetCurrentTextureStatus_Timeout:
+    case WGPUSurfaceGetCurrentTextureStatus_Outdated:
+    case WGPUSurfaceGetCurrentTextureStatus_Lost:
+        if ( surfaceTexture.texture != nullptr )
+        {
+            wgpuTextureRelease( surfaceTexture.texture );
+        }
+
+        resize();
+        return nullptr;
+    case WGPUSurfaceGetCurrentTextureStatus_OutOfMemory:
+    case WGPUSurfaceGetCurrentTextureStatus_DeviceLost:
+        break;
+    default:
+        return nullptr;
+    }
+
+    return surfaceTexture.texture;
+}
+
 // Initialize the application.
 void init()
 {
@@ -262,12 +308,62 @@ void init()
     instance = wgpuCreateInstance( &instanceDesc );
 #endif
 
-    surface = SDL_GetWGPUSurface( instance, window );
+    surface             = SDL_GetWGPUSurface( instance, window );
     WGPUAdapter adapter = lwgpuCreateAdapter( instance, surface );
     device              = lwgpuCreateDevice( adapter );
     queue               = wgpuDeviceGetQueue( device );
 
+    // output adapter info
     inspectAdapter( adapter );
+
+    // configure surface
+    WGPUSurfaceCapabilities surfaceCaps {};
+    wgpuSurfaceGetCapabilities( surface, adapter, &surfaceCaps );
+    
+    WGPUTextureFormat preferredFormat         = surfaceCaps.formats[0];
+    bool              mailboxPresentSupport   = false;
+    bool              immediatePresentSupport = false;
+
+    for ( uint32_t i = 0; i < surfaceCaps.formatCount; i++ )
+    {
+        if (surfaceCaps.formats[i] == WGPUTextureFormat_BGRA8UnormSrgb)
+        {
+            preferredFormat = surfaceCaps.formats[i];
+            std::cout << "Selecting SRGB surface format" << std::endl;
+            break;
+        }
+    }
+
+    for (uint32_t i = 0; i < surfaceCaps.presentModeCount; i++)
+    {
+        if (surfaceCaps.presentModes[i] == WGPUPresentMode_Mailbox)
+        {
+            mailboxPresentSupport = true;
+        }
+
+        if ( surfaceCaps.presentModes[i] == WGPUPresentMode_Immediate )
+        {
+            immediatePresentSupport = true;
+        }
+    }
+
+    wgpuSurfaceCapabilitiesFreeMembers( surfaceCaps );
+
+    surfaceConfiguration                 = WGPUSurfaceConfiguration {};
+    surfaceConfiguration.device          = device;
+    surfaceConfiguration.format          = preferredFormat;
+    surfaceConfiguration.width           = WINDOW_WIDTH;
+    surfaceConfiguration.height          = WINDOW_HEIGHT;
+    surfaceConfiguration.usage           = WGPUTextureUsage_RenderAttachment;
+    surfaceConfiguration.viewFormatCount = 0;
+    surfaceConfiguration.viewFormats     = nullptr;
+    surfaceConfiguration.alphaMode       = WGPUCompositeAlphaMode_Auto;
+    surfaceConfiguration.presentMode     = immediatePresentSupport ? WGPUPresentMode_Immediate :
+                                           mailboxPresentSupport   ? WGPUPresentMode_Mailbox :
+                                                                     WGPUPresentMode_Fifo;
+    surfaceConfiguration.nextInChain     = nullptr;
+    wgpuSurfaceConfigure( surface, &surfaceConfiguration );
+
     wgpuAdapterRelease( adapter );
     std::cout << "Initialized LearnWebGPU" << std::endl;
 }
@@ -276,14 +372,78 @@ void resize()
 {
     int width, height;
     SDL_GetWindowSize( window, &width, &height );
+
+    // ensure width & height are never 0
+    width = std::max( width, 1 );
+    height = std::max( height, 1 );
+
+    surfaceConfiguration.width = width;
+    surfaceConfiguration.height = height;
+    wgpuSurfaceConfigure( surface, &surfaceConfiguration );
 }
 
 void render()
 {
-    lwgpuPollDevice( device );
+    WGPUTexture surfaceTexture = lwgpuGetNextSurfaceTexture( surface );
+    if ( surfaceTexture == nullptr )
+    {
+        return;
+    }
+
+    WGPUTextureViewDescriptor surfaceTextureViewDesc {};
+    surfaceTextureViewDesc.label           = "Surface Texture View";
+    surfaceTextureViewDesc.format          = wgpuTextureGetFormat( surfaceTexture );
+    surfaceTextureViewDesc.dimension       = WGPUTextureViewDimension_2D;
+    surfaceTextureViewDesc.baseMipLevel    = 0;
+    surfaceTextureViewDesc.mipLevelCount   = 1;
+    surfaceTextureViewDesc.baseArrayLayer  = 0;
+    surfaceTextureViewDesc.arrayLayerCount = 1;
+    surfaceTextureViewDesc.aspect          = WGPUTextureAspect_All;
+    WGPUTextureView surfaceTextureView     = wgpuTextureCreateView( surfaceTexture, &surfaceTextureViewDesc );
+
+    WGPUCommandEncoderDescriptor encoderDesc {};
+    encoderDesc.label                 = "Command Encoder";
+    WGPUCommandEncoder commandEncoder = wgpuDeviceCreateCommandEncoder( device, &encoderDesc );
+
+    WGPURenderPassColorAttachment colorAttachment {};
+    colorAttachment.view = surfaceTextureView;
+    colorAttachment.resolveTarget = nullptr;
+    colorAttachment.loadOp        = WGPULoadOp_Clear;
+    colorAttachment.storeOp       = WGPUStoreOp_Store;
+    colorAttachment.clearValue    = { 0.4F, 0.6F, 0.9F, 1.0F };
+    colorAttachment.nextInChain   = nullptr;
+#ifndef WEBGPU_BACKEND_WGPU
+    colorAttachment.depthSlice    = WGPU_DEPTH_SLICE_UNDEFINED;
+#endif
+
+    WGPURenderPassDescriptor renderPassDesc {};
+    renderPassDesc.label                  = "Render Pass";
+    renderPassDesc.colorAttachmentCount   = 1;
+    renderPassDesc.colorAttachments       = &colorAttachment;
+    renderPassDesc.depthStencilAttachment = nullptr;
+    renderPassDesc.occlusionQuerySet      = nullptr;
+    renderPassDesc.timestampWrites        = nullptr;
+    WGPURenderPassEncoder renderPassEncoder = wgpuCommandEncoderBeginRenderPass( commandEncoder, &renderPassDesc );
+    wgpuRenderPassEncoderEnd( renderPassEncoder );
+
+    WGPUCommandBufferDescriptor cmdBufDesc {};
+    cmdBufDesc.label                = "Command Buffer";
+    WGPUCommandBuffer commandBuffer = wgpuCommandEncoderFinish( commandEncoder, &cmdBufDesc );
+    wgpuQueueSubmit( queue, 1, &commandBuffer );
+
+#ifndef WEBGPU_BACKEND_EMSCRIPTEN
+    wgpuSurfacePresent( surface );
+#endif
+
+    lwgpuPollDevice( device ); // Wait on device work to be done
+
+    wgpuCommandBufferRelease( commandBuffer );
+    wgpuCommandEncoderRelease( commandEncoder );
+    wgpuTextureViewRelease( surfaceTextureView );
+    wgpuTextureRelease( surfaceTexture );
 }
 
-void update( void* userdata = nullptr )
+void update( void* pUserData )
 {
     SDL_Event event;
     while ( SDL_PollEvent( &event ) )
@@ -309,6 +469,8 @@ void update( void* userdata = nullptr )
 
 void destroy()
 {
+    std::cout << "Shutting down LearnWebGPU" << std::endl;
+
     wgpuQueueRelease( queue );
     wgpuDeviceRelease( device );
     wgpuSurfaceRelease( surface );
