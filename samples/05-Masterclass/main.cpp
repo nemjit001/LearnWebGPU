@@ -559,8 +559,8 @@ void resize()
     depthStencilDesc.mipLevelCount           = 1;
     depthStencilDesc.sampleCount             = 1;
     depthStencilDesc.usage                   = WGPUTextureUsage_RenderAttachment;
-    depthStencilDesc.viewFormatCount         = 1;
-    depthStencilDesc.viewFormats             = &depthStencilFormat;
+    depthStencilDesc.viewFormatCount         = 0;
+    depthStencilDesc.viewFormats             = nullptr;
     depthStencilTexture                      = wgpuDeviceCreateTexture( device, &depthStencilDesc );
 
     WGPUTextureViewDescriptor depthStencilViewDesc {};
@@ -571,7 +571,7 @@ void resize()
     depthStencilViewDesc.mipLevelCount   = 1;
     depthStencilViewDesc.baseArrayLayer  = 0;
     depthStencilViewDesc.arrayLayerCount = 1;
-    depthStencilViewDesc.aspect          = WGPUTextureAspect_DepthOnly;
+    depthStencilViewDesc.aspect          = WGPUTextureAspect_All;
     depthStencilTextureView              = wgpuTextureCreateView( depthStencilTexture, &depthStencilViewDesc );
 }
 
@@ -645,8 +645,8 @@ void render()
     wgpuRenderPassEncoderSetPipeline( renderPassEncoder, renderPipeline );
     wgpuRenderPassEncoderSetBindGroup( renderPassEncoder, 0, bindGroup, 0, nullptr );
 
-    wgpuRenderPassEncoderSetVertexBuffer( renderPassEncoder, 0, vertexBuffer, 0, sizeof( vertices ) );
-    wgpuRenderPassEncoderSetIndexBuffer( renderPassEncoder, indexBuffer, WGPUIndexFormat_Uint32, 0, wgpuBufferGetSize( vertexBuffer ) );
+    wgpuRenderPassEncoderSetVertexBuffer( renderPassEncoder, 0, vertexBuffer, 0, wgpuBufferGetSize( vertexBuffer ) );
+    wgpuRenderPassEncoderSetIndexBuffer( renderPassEncoder, indexBuffer, WGPUIndexFormat_Uint16, 0, wgpuBufferGetSize( indexBuffer ) );
     wgpuRenderPassEncoderDrawIndexed( renderPassEncoder, sizeof( indices ) / sizeof( indices[0] ), 1, 0, 0, 0 );
 
     wgpuRenderPassEncoderEnd( renderPassEncoder );
@@ -663,7 +663,7 @@ void render()
 
     lwgpuPollDevice( device ); // Wait on device work to be done
 
-    wgpuBindGroupRelease( bindGroup );
+    // wgpuBindGroupRelease( bindGroup );
     wgpuCommandBufferRelease( commandBuffer );
     wgpuCommandEncoderRelease( commandEncoder );
     wgpuTextureViewRelease( surfaceTextureView );
