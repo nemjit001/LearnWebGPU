@@ -611,7 +611,7 @@ void render()
 
     WGPURenderPassDepthStencilAttachment depthStencilAttachment {};
     depthStencilAttachment.view              = depthStencilTextureView;
-    depthStencilAttachment.depthLoadOp       = WGPULoadOp_Load;
+    depthStencilAttachment.depthLoadOp       = WGPULoadOp_Clear;
     depthStencilAttachment.depthStoreOp      = WGPUStoreOp_Store;
     depthStencilAttachment.depthClearValue   = 1.0F;
     depthStencilAttachment.depthReadOnly     = false;
